@@ -1,0 +1,41 @@
+#사용설명서.txt
+0829_test_01.py
+    개발 중인 코드
+
+
+drone_sttop.py
+    드론 모터 멈추게 하는 코드
+
+drone.py
+    최종 코드(전원 연결하면 자동으로 실행되게 할 수 있게)
+
+    서비스 활성화 확인 코드: systemctl status drone.service
+    
+실행 중단
+    sudo systemctl disable drone.service
+    sudo systemctl stop drone.service
+
+서비스 비활성화
+    sudo systemctl disable drone.service
+
+
+코드 수정 후 자동 실행 복구
+    sudo systemctl enable drone.service
+    sudo systemctl start drone.service
+
+
+
+
+라즈베리파이 종료 방법
+sudo shutdown now
+
+
+
+서비스 활성화 (부팅 시 자동 실행)
+sudo systemctl enable 서비스이름.service
+
+sudo systemctl enable drone.service     # 자동 실행 켜기
+sudo systemctl start drone.service      # 지금 실행
+sudo systemctl disable drone.service    # 자동 실행 끄기
+sudo systemctl stop drone.service       # 지금 중지
+sudo systemctl status drone.service     # 상태 확인

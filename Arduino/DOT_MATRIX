@@ -1,0 +1,174 @@
+// Arduino, Arduino IDE
+
+int G[] = {13, 8, 17, 10, 5, 16, 4, 14}; // 행 제어 (HIGH가 ON)
+int V[] = {9, 3, 2, 12, 15, 11, 7, 6};   // 열 제어 (LOW가 ON)
+
+int joyX = A4; // 조이스틱 X축
+int joyY = A5; // 조이스틱 Y축
+
+int posX = 0, posY = 0; // 현재 위치
+int score = 0;
+
+unsigned long lastMoveTime = 0;
+const int moveDelay = 150; // 조이스틱 반응 딜레이
+
+unsigned long gameStartTime;
+const unsigned long gameDuration = 5000; // 게임 시간: 5초
+bool gameEnded = false;
+unsigned long gameEndTime = 0;
+const unsigned long restartDelay = 2000; // 게임 종료 후 2초 대기
+
+int targetX, targetY; // 점수 블록 좌표
+
+// 숫자 0~9 비트맵 정의 (점수 표시용)
+const byte numbers[10][8] = {
+  {B00111100, B01000010, B01000110, B01001010, B01010010, B01100010, B01000010, B00111100}, // 0
+  {B00001000, B00011000, B00101000, B00001000, B00001000, B00001000, B00001000, B00111110}, // 1
+  {B00111100, B01000010, B00000010, B00000100, B00001000, B00010000, B00100000, B01111110}, // 2
+  {B00111100, B01000010, B00000010, B00011100, B00000010, B00000010, B01000010, B00111100}, // 3
+  {B00000100, B00001100, B00010100, B00100100, B01000100, B01111110, B00000100, B00000100}, // 4
+  {B01111110, B01000000, B01111100, B00000010, B00000010, B00000010, B01000010, B00111100}, // 5
+  {B00111100, B01000000, B01000000, B01111100, B01000010, B01000010, B01000010, B00111100}, // 6
+  {B01111110, B00000010, B00000100, B00001000, B00010000, B00100000, B00100000, B00100000}, // 7
+  {B00111100, B01000010, B01000010, B00111100, B01000010, B01000010, B01000010, B00111100}, // 8
+  {B00111100, B01000010, B01000010, B00111110, B00000010, B00000010, B01000010, B00111100}  // 9
+};
+
+void setup() {
+  Serial.begin(9600);
+  for (int i = 0; i < 8; i++) {
+    pinMode(V[i], OUTPUT); pinMode(G[i], OUTPUT);
+    digitalWrite(G[i], LOW);  // 행 초기화
+    digitalWrite(V[i], HIGH); // 열 초기화
+  }
+
+  randomSeed(analogRead(A0)); // 랜덤 시드 초기화
+  spawnNewTarget(); // 첫 점수 생성
+  gameStartTime = millis(); // 게임 시작 시간 기록
+}
+
+void loop() {
+  if (gameEnded) {
+    displayNumber(score); // 점수 표시
+
+    int x = analogRead(joyX);
+    int y = analogRead(joyY);
+
+    if (millis() - gameEndTime > restartDelay) {
+      if (abs(x - 512) > 100 || abs(y - 512) > 100) {
+        restartGame(); // 조이스틱 움직이면 게임 재시작
+      }
+    }
+
+    return;
+  }
+
+  unsigned long currentTime = millis();
+  if (currentTime - gameStartTime >= gameDuration) {
+    endGame(); // 시간 종료 → 게임 종료
+    return;
+  }
+
+  int x = analogRead(joyX);
+  int y = analogRead(joyY);
+
+  if (currentTime - lastMoveTime > moveDelay) {
+    // 조이스틱 방향에 따라 위치 이동
+    if (x < 400 && posY > 0) posY--;
+    else if (x > 600 && posY < 7) posY++;
+
+    if (y < 400 && posX < 7) posX++;
+    else if (y > 600 && posX > 0) posX--;
+
+    lastMoveTime = currentTime;
+
+    // 점수 블록에 닿으면 점수 +1
+    if (posX >= targetX && posX <= targetX + 1 &&
+        posY >= targetY && posY <= targetY + 1) {
+      score++;
+      Serial.println("점수 획득! 현재 점수: " + String(score));
+      delay(300);
+      spawnNewTarget(); // 새 점수 생성
+    }
+  }
+
+  displayDot(posX, posY); // 화면 표시
+}
+
+void displayDot(int col, int row) {
+  // 화면 초기화
+  for (int i = 0; i < 8; i++) {
+    digitalWrite(G[i], LOW);
+    digitalWrite(V[i], HIGH);
+  }
+
+  // 점수 블록 점등 (2x2)
+  for (int dy = 0; dy < 2; dy++) {
+    for (int dx = 0; dx < 2; dx++) {
+      int tx = targetX + dx;
+      int ty = targetY + dy;
+      if (!(tx == col && ty == row)) { // 현재 위치와 겹치면 생략
+        digitalWrite(V[tx], LOW);
+        digitalWrite(G[ty], HIGH);
+        delay(1);
+        digitalWrite(G[ty], LOW);
+        digitalWrite(V[tx], HIGH);
+      }
+    }
+  }
+
+  // 플레이어 위치 점등
+  digitalWrite(V[col], LOW);
+  digitalWrite(G[row], HIGH);
+  delay(3);
+}
+
+void displayNumber(int n) {
+  n = constrain(n, 0, 9); // 0~9 제한
+  for (int row = 0; row < 8; row++) {
+    byte bits = numbers[n][row];
+    for (int col = 0; col < 8; col++) {
+      bool on = bits & (1 << (7 - col));
+      digitalWrite(G[row], on ? HIGH : LOW);
+      digitalWrite(V[col], on ? LOW : HIGH);
+    }
+    delay(2);
+    // 초기화
+    for (int i = 0; i < 8; i++) {
+      digitalWrite(G[i], LOW);
+      digitalWrite(V[i], HIGH);
+    }
+  }
+}
+
+void spawnNewTarget() {
+  targetX = random(0, 7);
+  targetY = random(0, 7);
+  if (targetX == 7) targetX = 6;
+  if (targetY == 7) targetY = 6;
+
+  Serial.print("새 점수 위치: (");
+  Serial.print(targetX); Serial.print(", "); Serial.println(targetY);
+}
+
+void endGame() {
+  gameEnded = true;
+  gameEndTime = millis(); // 종료 시간 기록
+
+  // 전체 꺼줌
+  for (int i = 0; i < 8; i++) {
+    digitalWrite(G[i], LOW);
+    digitalWrite(V[i], HIGH);
+  }
+
+  Serial.println("=== 게임 종료 ===");
+  Serial.println("최종 점수: " + String(score));
+}
+
+void restartGame() {
+  posX = 0; posY = 0; score = 0;
+  gameStartTime = millis();
+  gameEnded = false;
+  spawnNewTarget();
+  Serial.println("게임 재시작!");
+}

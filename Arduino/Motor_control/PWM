@@ -1,0 +1,90 @@
+// Arduino, Arduino IDE
+
+#include <SoftwareSerial.h>
+
+#define pwm_out 11       // 모터 PWM 출력 핀
+#define pulse_in 5       // 펄스 입력 핀 (회전 속도 측정용)
+
+SoftwareSerial mySerial(2, 3);  // 블루투스 통신용 소프트웨어 시리얼
+
+int rpm_assign = 1000;   // 목표 RPM
+int motor_pwm = 0;       // 출력할 PWM 값
+int rpm_get;             // 측정된 현재 RPM
+
+float duration, freq;    // 펄스 주기, 주파수
+float get_high, get_low; // HIGH/LOW 신호 시간 측정값
+
+void setup() {
+  Serial.begin(115200);       // PC용 시리얼 통신 시작
+  mySerial.begin(115200);     // 블루투스 통신 시작
+
+  analogWrite(pwm_out, motor_pwm); // 초기 PWM 출력
+  pinMode(A0, INPUT);         // 여분 입력 (미사용)
+  pinMode(13, OUTPUT);        // 상태 LED 출력
+
+  delay(2000);                // 초기화 대기 시간
+}
+
+void loop() {
+  // Bluetooth 명령 수신 및 처리
+  if (mySerial.available()) {
+    char command = mySerial.read();
+
+    if (command == 'a') {
+      rpm_assign += 200;                      // 'a' 수신 → 목표 RPM 증가
+      if (rpm_assign > 3000) rpm_assign = 3000;
+      Serial.println("Bluetooth: UP 50 RPM");
+
+    } else if (command == 'b') {
+      rpm_assign -= 200;                      // 'b' 수신 → 목표 RPM 감소
+      if (rpm_assign < 0) rpm_assign = 0;
+      Serial.println("Bluetooth: DOWN 50 RPM");
+
+    } else {
+      Serial.print("Bluetooth: Unknown command ");
+      Serial.println(command);
+    }
+  }
+
+  // 펄스 측정으로 현재 회전 속도 측정
+  get_high = pulseIn(pulse_in, HIGH, 100000);  // HIGH 시간 (us)
+  get_low = pulseIn(pulse_in, LOW, 100000);    // LOW 시간 (us)
+  duration = get_high + get_low;               // 전체 주기
+
+  if (duration > 0) {
+    freq = 0.5 * 1e6 / duration;               // 주파수 계산 (0.5 보정: 펄스 2개당 1회전)
+    rpm_get = (60 * freq) / 2;                 // RPM 계산 (1초당 회전수 × 60 / 2)
+  } else {
+    rpm_get = 0;                               // 신호 없으면 RPM 0
+  }
+
+  // 목표 RPM과 비교하여 PWM 조절
+  if (rpm_get > rpm_assign) {
+    motor_pwm--;
+    if (motor_pwm < 0) motor_pwm = 0;
+    analogWrite(pwm_out, motor_pwm);
+
+  } else if (rpm_get < rpm_assign) {
+    motor_pwm++;
+    if (motor_pwm > 255) motor_pwm = 255;
+    analogWrite(pwm_out, motor_pwm);
+  }
+
+  // 시리얼 출력 (PC)
+  Serial.print(motor_pwm);
+  Serial.print("\t");
+  Serial.print(rpm_assign);
+  Serial.print("\t");
+  Serial.println(rpm_get);
+  // 블루투스 출력
+  mySerial.print("목표RPM:");
+  mySerial.print(rpm_assign);
+  mySerial.print(" 현재RPM:");
+  mySerial.println(rpm_get);
+  // LED 깜빡이기 (상태 표시)
+  digitalWrite(13, HIGH);
+  delay(50);
+  digitalWrite(13, LOW);
+
+  delay(200); // 루프 주기 딜레이 (200ms)
+}

@@ -1,0 +1,37 @@
+
+#include <Servo.h> // 서보 모터 라이브러리
+#define SENSOR_PIN A0 // 센서 출력 핀 (아날로그)
+
+Servo sg90; // 서보 모터 객체 생성
+
+void setup() {
+    sg90.attach(6);          // 서보 모터 핀 연결
+
+    sg90.write(0);           // 초기 위치 설정
+
+    Serial.begin(9600);      // 시리얼 통신 초기화
+
+}
+
+void loop() {
+
+    int sensorValue = analogRead(SENSOR_PIN); // 센서 값 읽기
+
+    Serial.println(sensorValue);             // 센서 값 출력 (디버깅용)
+
+    // ADC 값이 500 이하인 경우 모터 동작
+
+    if (sensorValue >= 650) {
+
+        sg90.write(15); // 서보 모터를 180도로 이동
+
+        delay(1000);     // 1초 대기
+
+        sg90.write(0);   // 서보 모터를 원래 위치로 복귀
+
+        delay(1000);     // 안정화를 위해 추가 대기
+    }
+
+    delay(100); // 다음 읽기를 위한 짧은 대기
+
+}

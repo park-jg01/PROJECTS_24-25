@@ -1,0 +1,584 @@
+// ===============================
+// 기능: 시계 / 스톱워치 / 알람 / 카운트다운 / 설정 모드
+// Codevision, ATmega128
+// ===============================
+
+#define F_CPU 16000000UL
+
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <util/delay.h>
+
+// 시간 단위 인덱스 정의
+enum {msec, sec, min};
+
+// -------------------------------
+// 변수 선언
+// -------------------------------
+
+// FND 출력용 데이터 버퍼
+unsigned char FND_DATA[]={0, 0, 0, 0, 0};       // 일반 시계 데이터
+unsigned char FND_DOWN[]={0, 0, 0, 0, 0};       // 카운트다운용 데이터
+unsigned char FND_NEW[]={0, 0, 0, 0, 0};        // 신규 모드용 데이터
+
+// FND 7-Segment 출력용 BCD 테이블 (0~9)
+unsigned char FND_BCD_TBL[]={0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09};
+unsigned char FND_BCD_TBL_H[]={0x00, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90};
+
+// 랩타임 저장 배열 (스톱워치용)
+unsigned char LAP_TIME[4][4]={{0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}};
+unsigned char LAP_INDEX=0;          // 랩 타임 인덱스
+unsigned char STOP_FLAG=0;          // 스톱워치 시작 플래그
+unsigned char STOP_FLAG2=0;         // 스톱워치 정지 플래그
+
+// 시간 관련 변수
+unsigned char time_ms=0, time_s=0, time_m=0;        // 기본 시계용 시간
+unsigned char stop_ms=0, stop_s=0, stop_m=0;        // 스톱워치용
+unsigned char down_s=0, down_m=0;                   // 카운트다운용
+
+unsigned char new_a=0, new_b=0, new_c=0;            // 신규 모드 변수
+
+unsigned char buff=0;
+
+// 모드 관련 변수
+unsigned char mode_sel=0;     // 현재 모드 선택 (0~4)
+unsigned char mode_state=0;   // 각 모드 내 상태 플래그 (1=실행 중)
+unsigned char al_enable=0;    // 알람 활성화 플래그
+
+// 스위치 입력 변수
+unsigned char sw0=0, sw1=0, sw2=0, sw3=0, sw6=0;
+unsigned char FND_SEL_CNT=0, FND_CNT=0;
+
+// 알람 시간 설정 변수
+unsigned char al_min=0, al_sec_u=0, al_sec_l=0, al_msec_u=0, al_msec_l=0;
+
+// 기타 변수
+unsigned char i=0, j=0;
+unsigned char light=0;
+
+// 신규 시계 모드용 변수
+static unsigned char hour = 0, minute = 0; // 시, 분
+static unsigned char running = 0;          // 시계 동작 플래그
+static unsigned char segment_position = 0; // 세그먼트 선택 위치 (0=시, 1=분)
+
+// -------------------------------
+// 함수 선언부
+// -------------------------------
+void print_FND_2bit(unsigned char time_type, unsigned char upper_data, unsigned char lower_data);
+void mode_0_Basic_Clock();   // 기본 시계 모드
+void mode_1_Stop_Watch();    // 스톱워치
+void mode_2_Alarm();         // 알람 설정
+void mode_3_Countdown();     // 카운트다운
+void mode_4_New();           // 신규 시계 모드 (시간 설정/운영)
+
+void timer0Countup();        // 스톱워치 시간 증가
+void timer0Countdown();      // 카운트다운 시간 감소
+
+// 인터럽트 루틴 선언
+ISR(TIMER0_OVF_vect);
+ISR(TIMER3_OVF_vect);
+ISR(INT0_vect);
+ISR(INT1_vect);
+ISR(INT2_vect);
+ISR(INT3_vect);
+ISR(INT6_vect);
+
+// -------------------------------
+// 메인 함수
+// -------------------------------
+int main()
+{
+    // 입출력 포트 설정
+    DDRA=0xFF;
+    DDRF=0xFF;
+    DDRC=0xFF;
+    DDRB=0xFF;
+    DDRG=0xFF;
+
+    DDRE=0x00;   // 스위치 입력 포트
+    DDRD=0x00;
+
+    // 초기 포트 상태
+    PORTG=0x00;
+    PORTE=0x00;
+    PORTB=0xFF;
+
+    // 외부 인터럽트 설정 (스위치)
+    EICRA=0xAA;  // INT0~3 상승엣지
+    EICRB=0x20;  // INT6 상승엣지
+    EIMSK=0x4F;  // INT0~3,6 활성화
+    EIFR=0x00;
+
+    // Timer3: 기본 시계용 (주기적 오버플로우)
+    TCCR3A=0x00;
+    TCCR3B=0x02; // prescaler = 8
+    TCCR3C=0x00;
+    TCNT3=0x4E20; // 초기값 세팅
+
+    // Timer1: 부저용 PWM 출력 설정
+    TCCR1A=0xC1;
+    TCCR1B=0x03;
+    TCCR1C=0x00;
+    TCNT1=0;
+
+    // 인터럽트 관련 초기화
+    TIMSK =0x00;
+    ETIMSK=0x04;  // Timer3 인터럽트 허용
+    TIFR =0x01;
+    ETIFR=0x04;
+
+    // 초기값 FND 출력
+    print_FND_2bit(msec, 0, 0);
+    print_FND_2bit(sec, 0, 0);
+    print_FND_2bit(min, 0, 0);
+
+    sei(); // 전역 인터럽트 허용
+
+    // -------------------------------
+    // 메인 루프
+    // -------------------------------
+    while(1)
+    {
+        OCR1A=255;  // 기본 상태 (부저 OFF)
+
+        // 모드 선택 스위치에 따라 각 기능 수행
+        switch(mode_sel)
+        {
+            case 0: mode_0_Basic_Clock(); break;
+            case 1: mode_1_Stop_Watch(); break;
+            case 2: mode_2_Alarm(); break;
+            case 3: mode_3_Countdown(); break;
+            case 4: mode_4_New(); break;
+            default: mode_0_Basic_Clock(); break;
+        }
+
+        // 알람 조건 충족 시 부저 동작
+        if(al_enable==1 &&
+           FND_DATA[0]==time_ms%10 &&
+           FND_DATA[1]==time_ms/10 &&
+           FND_DATA[2]==time_s%10 &&
+           FND_DATA[3]==time_s/10 &&
+           FND_DATA[4]==time_m)
+        {
+            sw1=0;
+            while(al_enable==1)
+            {
+                // 알람 동작 (부저 ON/OFF 반복)
+                mode_0_Basic_Clock();
+                OCR1A=100;
+                _delay_ms(20);
+                OCR1A=255;
+                _delay_ms(20);
+                if(sw1==1) // 스위치로 알람 해제
+                    al_enable=0;
+            }
+            sw1=0;
+        }
+    }
+
+    return 0;
+}
+
+// -------------------------------
+// Timer0 인터럽트: 스톱워치/카운트다운
+// -------------------------------
+ISR(TIMER0_OVF_vect)
+{
+    cli();
+    TCNT0=0x6C;
+    stop_ms++;
+    sei();
+}
+
+// -------------------------------
+// Timer3 인터럽트: 기본 시계 카운트
+// -------------------------------
+ISR(TIMER3_OVF_vect)
+{
+    cli();
+    TCNT3=0xB0FF;
+
+    // 밀리초 → 초 → 분 증가
+    time_ms++;
+    if(time_ms>=99)
+    {
+        if(time_s >= 59)
+        {
+            time_m++;
+            time_s=0;
+        }
+        else time_s++;
+
+        if(time_m>9) time_m=0;
+        time_ms=0;
+    }
+    sei();
+}
+
+// -------------------------------
+// 외부 인터럽트 (스위치 입력)
+// -------------------------------
+
+// 모드 변경 (INT0)
+ISR(INT0_vect)
+{
+    cli();
+    if(++mode_sel>4) mode_sel=0; // 모드 순환
+    mode_state=0;
+    sw2=sw3=sw6=0;
+    sei();
+}
+
+// 동작 시작/정지 (INT1)
+ISR(INT1_vect)
+{
+    cli();
+    mode_state=!mode_state;  // 실행/정지 토글
+    _delay_ms(1);
+    sw1=1;
+    sei();
+}
+
+// 스위치2 (INT2)
+ISR(INT2_vect)
+{
+    cli(); sw2=1; sei();
+}
+
+// 스위치3 (INT3)
+ISR(INT3_vect)
+{
+    cli(); sw3=1; sei();
+}
+
+// 스위치6 (INT6)
+ISR(INT6_vect)
+{
+    cli(); sw6=1; sei();
+}
+
+// -------------------------------
+// FND 출력 함수 (2자리 표시)
+// -------------------------------
+void print_FND_2bit(unsigned char time_type, unsigned char upper_data, unsigned char lower_data)
+{
+    unsigned char data=FND_BCD_TBL_H[upper_data] | FND_BCD_TBL[lower_data];
+    switch(time_type)
+    {
+        case msec: PORTC=data; break;
+        case sec:  PORTF=data; break;
+        case min:  PORTA=data; break;
+    }
+}
+
+// -------------------------------
+// 모드 0: 기본 시계 (HH:MM:SS)
+// -------------------------------
+void mode_0_Basic_Clock()
+{
+    print_FND_2bit(msec, time_ms/10, time_ms%10);
+    _delay_ms(1);
+    print_FND_2bit(sec, time_s/10, time_s%10);
+    _delay_ms(1);
+    print_FND_2bit(min, time_m/10, time_m%10);
+    _delay_ms(1);
+}
+
+// -------------------------------
+// 모드 1: 스톱워치
+// -------------------------------
+void mode_1_Stop_Watch()
+{
+    while (mode_state == 1)
+    {
+        sw2 = sw3 = sw6 = 0;
+
+        // 동작 표시 LED 깜빡임
+        PORTG = 0xFF; _delay_ms(50);
+        PORTG = 0x00; _delay_ms(50);
+
+        if (STOP_FLAG == 0)
+        {
+            // 타이머 시작
+            stop_s = stop_m = 0;
+            TCCR0 = 0x07;
+            TCNT0 = 0x64;
+            LAP_INDEX = 0;
+            STOP_FLAG = 1;
+        }
+
+        TIMSK = 0x01;       // Timer0 인터럽트 허용
+        timer0Countup();    // 시간 증가 계산
+
+        // 현재 시간 표시
+        print_FND_2bit(msec, stop_s / 10, stop_s % 10);
+        _delay_ms(1);
+        print_FND_2bit(sec, stop_m / 10, stop_m % 10);
+        _delay_ms(1);
+        print_FND_2bit(min, mode_sel, LAP_INDEX);
+        _delay_ms(1);
+
+        // 랩 타임 저장
+        if (sw1 == 1 && sw2 == 1)
+        {
+            if (LAP_INDEX < 4)
+            {
+                LAP_INDEX++;
+                LAP_TIME[LAP_INDEX][0] = stop_s % 10;
+                LAP_TIME[LAP_INDEX][1] = stop_s / 10;
+                LAP_TIME[LAP_INDEX][2] = stop_m % 10;
+                LAP_TIME[LAP_INDEX][3] = stop_m / 10;
+            }
+            if (LAP_INDEX == 3)
+                EIMSK = 0x4B; // 마지막 랩 저장 후 일부 인터럽트 비활성
+            sw2 = 0;
+        }
+
+        STOP_FLAG2 = 1;
+        if (mode_sel != 1) break;
+    }
+
+    // 모드 종료 시 초기화
+    if (STOP_FLAG2 == 1)
+    {
+        TIMSK = 0x00;
+        EIMSK = 0x4F;
+        LAP_INDEX = 0;
+        STOP_FLAG2 = 0;
+    }
+
+    // 마지막 랩 타임 표시
+    print_FND_2bit(msec, LAP_TIME[LAP_INDEX][1], LAP_TIME[LAP_INDEX][0]);
+    _delay_ms(1);
+    print_FND_2bit(sec, LAP_TIME[LAP_INDEX][3], LAP_TIME[LAP_INDEX][2]);
+    _delay_ms(1);
+    print_FND_2bit(min, mode_sel, LAP_INDEX);
+}
+
+// -------------------------------
+// 모드 2: 알람 설정
+// -------------------------------
+void mode_2_Alarm()
+{
+    // 초기 표시
+    buff=FND_BCD_TBL_H[FND_DATA[1]] | FND_BCD_TBL[FND_DATA[0]];
+    PORTC=buff;
+    buff=FND_BCD_TBL_H[FND_DATA[3]] | FND_BCD_TBL[FND_DATA[2]];
+    PORTF=buff;
+    print_FND_2bit(min, mode_sel, FND_DATA[4]);
+    FND_SEL_CNT=0;
+
+    while(mode_state==1)
+    {
+        // 설정 중 LED 깜빡임
+        PORTG=0xFF; _delay_ms(50);
+        PORTG=0x00; _delay_ms(50);
+
+        // 스위치2: 자리 이동
+        if(sw2==1)
+        {
+            FND_SEL_CNT++;
+            if(FND_SEL_CNT>4) FND_SEL_CNT=0;
+            sw2=0; FND_CNT=0;
+        }
+
+        // 스위치3: 숫자 증가
+        if(sw3==1)
+        {
+            FND_CNT++;
+            if(FND_CNT>9) FND_CNT=0;
+            sw3=0;
+        }
+
+        // 선택 자리 값 갱신
+        FND_DATA[FND_SEL_CNT]=FND_CNT;
+
+        // 표시 업데이트
+        buff=FND_BCD_TBL_H[FND_DATA[1]] | FND_BCD_TBL[FND_DATA[0]];
+        PORTC=buff;
+        buff=FND_BCD_TBL_H[FND_DATA[3]] | FND_BCD_TBL[FND_DATA[2]];
+        PORTF=buff;
+        print_FND_2bit(min, mode_sel, FND_DATA[4]);
+
+        if(mode_sel!=2) break;
+    }
+
+    // 스위치6: 알람 활성화
+    if(sw6==1)
+    {
+        al_enable=1;
+        sw6=0;
+    }
+}
+
+// -------------------------------
+// 모드 3: 카운트다운 타이머
+// -------------------------------
+void mode_3_Countdown()
+{
+    EIMSK=0x4F; // 인터럽트 허용
+
+    // 스위치2: 자리 이동
+    if(sw2==1)
+    {
+        FND_SEL_CNT++;
+        if(FND_SEL_CNT>4) FND_SEL_CNT=0;
+        sw2=0; FND_CNT=0;
+    }
+
+    // 스위치3: 숫자 증가
+    if(sw3==1)
+    {
+        FND_CNT++;
+        if(FND_CNT>9) FND_CNT=0;
+        sw3=0;
+    }
+
+    // 카운트다운 설정값 표시
+    FND_DOWN[FND_SEL_CNT]=FND_CNT;
+    buff=FND_BCD_TBL_H[FND_DOWN[1]] | FND_BCD_TBL[FND_DOWN[0]];
+    PORTC=buff;
+    buff=FND_BCD_TBL_H[FND_DOWN[3]] | FND_BCD_TBL[FND_DOWN[2]];
+    PORTF=buff;
+    print_FND_2bit(min, mode_sel, 0);
+
+    down_s=FND_DOWN[1]*10+FND_DOWN[0];
+    down_m=FND_DOWN[3]*10+FND_DOWN[2];
+
+    while(mode_state==1)
+    {
+        PORTG=0xFF; _delay_ms(50);
+        PORTG=0x00; _delay_ms(50);
+
+        if(STOP_FLAG==0)
+        {
+            TCCR0=0x07;
+            TCNT0=0x64;
+            STOP_FLAG=1;
+        }
+
+        TIMSK =0x01;
+        timer0Countdown();
+
+        // 남은 시간 표시
+        print_FND_2bit(msec, down_s/10, down_s%10);
+        _delay_ms(1);
+        print_FND_2bit(sec, down_m/10, down_m%10);
+        _delay_ms(1);
+        print_FND_2bit(min, mode_sel, 0);
+
+        // 종료 조건
+        if(down_s==0&&down_m==0)
+        {
+            TIMSK=0x00;
+            for(i=0; i<5; i++)
+            {
+                OCR1A=100; _delay_ms(50);
+                OCR1A=255; _delay_ms(50);
+            }
+            OCR1A=255; mode_state=0;
+            break;
+        }
+
+        if(mode_sel!=3) break;
+        STOP_FLAG2=1;
+    }
+
+    if(STOP_FLAG2==1)
+    {
+        TIMSK =0x00;
+        STOP_FLAG2=0;
+    }
+
+    // 스위치6: 초기화
+    if(sw6==1)
+    {
+        for(i=0; i<5; i++) FND_DOWN[i]=0;
+        down_s=down_m=0;
+        STOP_FLAG=0;
+        FND_CNT=FND_SEL_CNT=0;
+        sw6=0;
+    }
+}
+
+// -------------------------------
+// 모드 4: 신규 시계 (시간 직접 설정)
+// -------------------------------
+void mode_4_New()
+{
+    // 스위치1: 시/분 자리 선택
+    if (sw1 == 1 && running == 0)
+    {
+        segment_position = (segment_position + 1) % 2;
+        sw1 = 0;
+    }
+
+    // 스위치2: 선택 자리 증가
+    if (sw2 == 1 && running == 0)
+    {
+        if (segment_position == 0) hour = (hour + 1) % 24;
+        else minute = (minute + 1) % 60;
+        sw2 = 0;
+    }
+
+    // 스위치3: 시계 시작
+    if (sw3 == 1) { running = 1; sw3 = 0; }
+
+    // 스위치6: 시계 정지
+    if (sw6 == 1) { running = 0; sw6 = 0; }
+
+    // 시간 증가 처리
+    if (running)
+    {
+        if (time_s >= 59 && time_ms == 0)
+        {
+            minute++;
+            time_s = 0;
+        }
+
+        if (minute >= 60) { minute = 0; hour++; }
+        if (hour >= 24) hour = 0;
+    }
+
+    // 시/분 출력
+    print_FND_2bit(sec, hour / 10, hour % 10);
+    _delay_ms(1);
+    print_FND_2bit(msec, minute / 10, minute % 10);
+    _delay_ms(1);
+}
+
+// -------------------------------
+// 보조 함수: 스톱워치 증가
+// -------------------------------
+void timer0Countup()
+{
+    if(stop_ms>=99)
+    {
+        if(stop_s >= 59)
+        {
+            stop_m++;
+            stop_s=0;
+        }
+        else stop_s++;
+
+        if(stop_m>59) stop_m=0;
+        stop_ms=0;
+    }
+}
+
+// -------------------------------
+// 보조 함수: 카운트다운 감소
+// -------------------------------
+void timer0Countdown()
+{
+    if(stop_ms>=99)
+    {
+        if(down_s == 0)
+        {
+            down_m--;
+            down_s=59;
+        }
+        else down_s--;
+        stop_ms=0;
+    }
+}

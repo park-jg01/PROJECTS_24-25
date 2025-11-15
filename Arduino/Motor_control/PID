@@ -1,0 +1,82 @@
+// Arduino, Arduino IDE
+
+#include <SoftwareSerial.h>
+
+#define pwm_out 11     // PWM 출력 핀
+#define pulse_in 5     // 홀센서 입력 핀
+
+SoftwareSerial mySerial(2, 3);  // 블루투스 통신 설정 (TX=2, RX=3)
+
+int rpm_assign = 1000; // 목표 RPM
+int rpm_get = 0;        // 실제 측정된 RPM
+
+float get_high, get_low;
+float duration, freq;
+
+float Kp = 0.8;     // PID 비례 계수
+float Ki = 5;       // PID 적분 계수
+float Kd = 0.0005;  // PID 미분 계수
+
+float error = 0;
+float errorPrevious = 0;
+float IControl = 0;
+float DControl = 0;
+float PControl = 0;
+float PIDControl = 0;
+
+void setup() {
+  Serial.begin(115200);      // 시리얼 모니터 통신
+  mySerial.begin(115200);    // 블루투스 통신
+
+  pinMode(pwm_out, OUTPUT);  // PWM 출력 핀 설정
+  analogWrite(pwm_out, 0);   // 초기 PWM 출력 0
+  pinMode(pulse_in, INPUT);  // 펄스 입력 핀 설정
+  pinMode(13, OUTPUT);       // 디버깅용 LED 핀
+  delay(1000);               // 초기화 대기
+}
+
+void loop() {
+  // 블루투스로 목표 RPM 조절
+  if (mySerial.available()) {
+    char command = mySerial.read();
+    if (command == 'a') {
+      rpm_assign += 200;             // 'a' 명령: RPM 증가
+      if (rpm_assign > 3000) rpm_assign = 3000;
+    } else if (command == 'b') {
+      rpm_assign -= 200;             // 'b' 명령: RPM 감소
+      if (rpm_assign < 0) rpm_assign = 0;
+    }
+  }
+
+  // 펄스 입력으로 현재 RPM 측정
+  get_high = pulseIn(pulse_in, HIGH, 100000);  // HIGH 지속 시간 (us)
+  get_low = pulseIn(pulse_in, LOW, 100000);    // LOW 지속 시간 (us)
+  duration = get_high + get_low;               // 전체 주기
+
+  freq = 0.5 * 1e6 / duration;                 // 1주기당 두 펄스이므로 0.5 곱함
+  rpm_get = 60 * freq / 2;                     // 회전수 계산
+
+  
+// PID 제어 연산
+  error = rpm_assign - rpm_get;               // 오차 계산
+  PControl = Kp * error;                      // 비례 제어
+  IControl += Ki * error * 0.004;             // 적분 제어 (4ms 간격)
+  DControl = Kd * (error - errorPrevious) / 0.004;  // 미분 제어
+  PIDControl = PControl + IControl + DControl;      // PID 합산
+
+  PIDControl = constrain(PIDControl, 0, 255); // PWM 범위로 제한
+
+  analogWrite(pwm_out, PIDControl);          // PWM 출력
+
+  errorPrevious = error;                     // 이전 오차 저장
+
+  // 시리얼 및 블루투스로 데이터 전송
+  Serial.print(PIDControl); Serial.print('\t');
+  Serial.print(rpm_assign); Serial.print('\t');
+  Serial.println(rpm_get);
+
+  mySerial.print("목표RPM:"); mySerial.print(rpm_assign);
+  mySerial.print(" 현재RPM:"); mySerial.println(rpm_get);
+
+  delay(4); // 4ms 주기로 반복
+}
