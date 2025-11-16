@@ -1,4 +1,4 @@
-# Embedded System Projects 2024–2025
+# University Projects 2024–2025
 
 
 ---
